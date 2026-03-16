@@ -24,6 +24,7 @@ try:
 except ImportError:
     # cgi.escape is deprecated in python 3.7
     from cgi import escape  # noqa: F401
+import random
 import re
 import binascii
 import os
@@ -494,6 +495,9 @@ class DocxTemplate(object):
         # fix docPr ID's
         self.fix_docpr_ids(tree)
 
+        # fix w14:paraId / w14:textId duplicates from loop expansion
+        self.fix_para_ids(tree)
+
         # Replace body xml tree
         self.map_tree(tree)
 
@@ -612,6 +616,30 @@ class DocxTemplate(object):
         for elt in tree.xpath("//wp:docPr", namespaces=docx.oxml.ns.nsmap):
             self.docx_ids_index += 1
             elt.attrib["id"] = str(self.docx_ids_index)
+
+    def fix_para_ids(self, tree):
+        """Deduplicate w14:paraId and w14:textId after Jinja2 loop expansion.
+
+        When {%tr for %} loops duplicate <w:tr> elements, the w14:paraId and
+        w14:textId attributes are copied verbatim, producing duplicates that
+        trigger Word Desktop's auto-repair logic (duplicating rows).
+        """
+        W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+        for attr_name in ("paraId", "textId"):
+            full_attr = "{%s}%s" % (W14_NS, attr_name)
+            seen = set()
+            for el in tree.iter():
+                val = el.get(full_attr)
+                if val is None:
+                    continue
+                if val in seen:
+                    new_val = "%08X" % random.randint(0, 0xFFFFFFFF)
+                    while new_val in seen:
+                        new_val = "%08X" % random.randint(0, 0xFFFFFFFF)
+                    el.set(full_attr, new_val)
+                    seen.add(new_val)
+                else:
+                    seen.add(val)
 
     def new_subdoc(self, docpath=None) -> Subdoc:
         from .subdoc import Subdoc
