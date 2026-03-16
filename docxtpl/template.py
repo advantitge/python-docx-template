@@ -44,18 +44,21 @@ class DocxTemplate(object):
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"
     )
 
-    def __init__(self, template_file: Union[IO[bytes], str, PathLike]) -> None:
+    def __init__(self, template_file: Union[IO[bytes], str, PathLike], strip_bookmarks: bool = False) -> None:
         self.template_file = template_file
         self.reset_replacements()
         self.docx = None
         self.is_rendered = False
         self.is_saved = False
         self.allow_missing_pics = False
+        self.strip_bookmarks = strip_bookmarks
 
     def init_docx(self, reload: bool = True):
         if not self.docx or (self.is_rendered and reload):
             self.docx = Document(self.template_file)
             self.is_rendered = False
+            if self.strip_bookmarks:
+                self._remove_bookmarks()
 
     def render_init(self):
         self.init_docx()
@@ -518,6 +521,10 @@ class DocxTemplate(object):
         # fix subdocument namespace declarations on root element
         self.fix_subdoc_namespaces()
 
+        # strip bookmarks introduced by subdocuments
+        if self.strip_bookmarks:
+            self._remove_bookmarks()
+
         # set rendered flag
         self.is_rendered = True
 
@@ -698,6 +705,18 @@ class DocxTemplate(object):
                 zout.writestr(item, data)
         out.seek(0)
         self.docx = Document(out)
+
+    def _remove_bookmarks(self):
+        """Remove all w:bookmarkStart and w:bookmarkEnd elements."""
+        element = getattr(self.docx, "_element", None)
+        if element is None:
+            return
+        W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        for tag in ("bookmarkStart", "bookmarkEnd"):
+            for bm in element.iter("{%s}%s" % (W_NS, tag)):
+                parent = bm.getparent()
+                if parent is not None:
+                    parent.remove(bm)
 
     def new_subdoc(self, docpath=None) -> Subdoc:
         from .subdoc import Subdoc
