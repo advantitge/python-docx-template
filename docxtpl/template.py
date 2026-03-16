@@ -515,6 +515,9 @@ class DocxTemplate(object):
 
         self.render_footnotes(context, jinja_env)
 
+        # fix subdocument namespace declarations on root element
+        self.fix_subdoc_namespaces()
+
         # set rendered flag
         self.is_rendered = True
 
@@ -640,6 +643,61 @@ class DocxTemplate(object):
                     seen.add(new_val)
                 else:
                     seen.add(val)
+
+    _OOXML_NAMESPACES = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "a14": "http://schemas.microsoft.com/office/drawing/2010/main",
+        "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+        "w16sdtfl": "http://schemas.microsoft.com/office/word/2024/wordml/sdtformatlock",
+    }
+
+    def fix_subdoc_namespaces(self):
+        """Ensure all namespace prefixes used in document.xml are declared
+        on the <w:document> root element.
+
+        When new_subdoc() inserts content from another DOCX, namespace
+        declarations (xmlns:a, xmlns:pic, etc.) from the subdocument may not
+        be propagated to the root. Office Online requires them.
+        """
+        buf = io.BytesIO()
+        self.docx.save(buf)
+        buf.seek(0)
+
+        with zipfile.ZipFile(buf, "r") as zin:
+            doc_xml = zin.read("word/document.xml")
+
+        root_start = doc_xml.index(b"<w:document")
+        root_end = doc_xml.index(b">", root_start)
+        root_tag = doc_xml[root_start:root_end]
+
+        declared = set(re.findall(rb'xmlns:(\w+)=', root_tag))
+        used = set(re.findall(rb'<(\w+):', doc_xml)) | set(re.findall(rb' (\w+):\w+=', doc_xml))
+        undeclared = used - declared - {b"xml", b"xmlns"}
+
+        if not undeclared:
+            return
+
+        inline_ns = dict(re.findall(rb'xmlns:(\w+)="([^"]+)"', doc_xml))
+        missing = {}
+        for prefix in undeclared:
+            uri = inline_ns.get(prefix) or self._OOXML_NAMESPACES.get(prefix.decode(), b"")
+            if uri:
+                missing[prefix] = uri if isinstance(uri, bytes) else uri.encode()
+
+        if not missing:
+            return
+
+        ns_attrs = b" ".join(b'xmlns:%s="%s"' % (p, u) for p, u in missing.items())
+        buf.seek(0)
+        out = io.BytesIO()
+        with zipfile.ZipFile(buf, "r") as zin, zipfile.ZipFile(out, "w") as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == "word/document.xml":
+                    data = re.sub(rb"(<w:document\b)", rb"\1 " + ns_attrs, data, count=1)
+                zout.writestr(item, data)
+        out.seek(0)
+        self.docx = Document(out)
 
     def new_subdoc(self, docpath=None) -> Subdoc:
         from .subdoc import Subdoc
