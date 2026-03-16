@@ -718,6 +718,59 @@ class DocxTemplate(object):
                 if parent is not None:
                     parent.remove(bm)
 
+    def validate(self):
+        """Check the rendered document for issues that trigger Word's auto-repair.
+
+        Returns a list of issue strings. Empty list means the document is clean.
+        Call after render().
+        """
+        from collections import Counter
+
+        buf = io.BytesIO()
+        self.docx.save(buf)
+        buf.seek(0)
+
+        with zipfile.ZipFile(buf, "r") as z:
+            doc_xml = z.read("word/document.xml")
+
+        issues = []
+
+        # 1. Duplicate w14:paraId / w14:textId
+        for attr in ("paraId", "textId"):
+            ids = re.findall(rb"w14:" + attr.encode() + rb'="([^"]+)"', doc_xml)
+            dupes = {k.decode(): v for k, v in Counter(ids).items() if v > 1}
+            if dupes:
+                total = sum(v - 1 for v in dupes.values())
+                issues.append("DUPLICATE_W14_%s: %d duplicate(s) across %d value(s)" % (attr.upper(), total, len(dupes)))
+
+        # 2. Undeclared namespace prefixes
+        root_start = doc_xml.find(b"<w:document")
+        root_end = doc_xml.find(b">", root_start)
+        root_tag = doc_xml[root_start:root_end]
+        declared = set(re.findall(rb"xmlns:(\w+)=", root_tag))
+        used = set(re.findall(rb"<(\w+):", doc_xml)) | set(re.findall(rb" (\w+):\w+=", doc_xml))
+        undeclared = used - declared - {b"xml", b"xmlns"}
+        if undeclared:
+            prefixes = ", ".join(p.decode() for p in sorted(undeclared))
+            issues.append("UNDECLARED_NAMESPACES: %s" % prefixes)
+
+        # 3. Nested paragraphs (<w:p> inside <w:p>)
+        try:
+            tree = etree.fromstring(doc_xml, parser=etree.XMLParser(recover=True))
+            W_P = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"
+            for p in tree.iter(W_P):
+                for child_p in p.iter(W_P):
+                    if child_p is not p:
+                        issues.append("NESTED_PARAGRAPHS: <w:p> found inside <w:p>")
+                        break
+                else:
+                    continue
+                break
+        except etree.XMLSyntaxError:
+            issues.append("XML_SYNTAX_ERROR: document.xml could not be parsed")
+
+        return issues
+
     def new_subdoc(self, docpath=None) -> Subdoc:
         from .subdoc import Subdoc
 
