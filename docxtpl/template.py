@@ -650,22 +650,19 @@ class DocxTemplate(object):
             issues.append("UNDECLARED_NAMESPACES: %s" % prefixes)
 
         # 3. Nested paragraphs (<w:p> inside <w:p>)
-        body_start = doc_xml.find(b"<w:body")
-        body_end = doc_xml.find(b"</w:body>")
-        if body_start >= 0 and body_end >= 0:
-            body_xml = doc_xml[body_start:body_end + len(b"</w:body>")]
-            try:
-                body = etree.fromstring(body_xml, parser=etree.XMLParser(recover=True))
-                for p in body.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
-                    for child_p in p.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
-                        if child_p is not p:
-                            issues.append("NESTED_PARAGRAPHS: <w:p> found inside <w:p>")
-                            break
-                    else:
-                        continue
-                    break
-            except etree.XMLSyntaxError:
-                issues.append("XML_SYNTAX_ERROR: body could not be parsed")
+        try:
+            tree = etree.fromstring(doc_xml, parser=etree.XMLParser(recover=True))
+            W_P = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"
+            for p in tree.iter(W_P):
+                for child_p in p.iter(W_P):
+                    if child_p is not p:
+                        issues.append("NESTED_PARAGRAPHS: <w:p> found inside <w:p>")
+                        break
+                else:
+                    continue
+                break
+        except etree.XMLSyntaxError:
+            issues.append("XML_SYNTAX_ERROR: document.xml could not be parsed")
 
         return issues
 
